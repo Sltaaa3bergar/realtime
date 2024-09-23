@@ -43,7 +43,8 @@ defmodule Realtime.Tenants.BatchBroadcast do
          %Ecto.Changeset{changes: %{messages: messages}} = changeset,
          events_per_second_key = Tenants.events_per_second_key(tenant),
          :ok <- check_rate_limit(events_per_second_key, tenant, length(messages)) do
-      tenant_db_conn = Connect.lookup_or_start_connection(tenant.external_id)
+      tenant_db_conn =
+        Connect.lookup_or_start_connection(tenant.external_id)
 
       events =
         messages

@@ -18,6 +18,7 @@ defmodule Realtime.Tenants.Connect do
   alias Realtime.Tenants
   alias Realtime.Tenants.Migrations
   alias Realtime.UsersCounter
+  alias Realtime.BroadcastChanges
 
   @rpc_timeout_default 30_000
   @check_connected_user_interval_default 50_000
@@ -26,6 +27,7 @@ defmodule Realtime.Tenants.Connect do
   defstruct tenant_id: nil,
             db_conn_reference: nil,
             db_conn_pid: nil,
+            broadcast_changes_pid: nil,
             check_connected_user_interval: nil,
             connected_users_bucket: [1]
 
@@ -121,13 +123,18 @@ defmodule Realtime.Tenants.Connect do
          {:ok, conn} <- Database.check_tenant_connection(tenant, @application_name),
          ref = Process.monitor(conn),
          [%{settings: settings} | _] <- tenant.extensions,
-         :ok <-
-           Migrations.run_migrations(%Migrations{
-             tenant_external_id: tenant.external_id,
-             settings: settings
-           }) do
+         migrations = %Migrations{tenant_external_id: tenant.external_id, settings: settings},
+         :ok <- Migrations.run_migrations(migrations),
+         {:ok, broadcast_changes_pid} <- start_broadcast_changes(tenant) do
       :syn.update_registry(__MODULE__, tenant_id, fn _pid, meta -> %{meta | conn: conn} end)
-      state = %{state | db_conn_reference: ref, db_conn_pid: conn}
+
+      state = %{
+        state
+        | db_conn_reference: ref,
+          db_conn_pid: conn,
+          broadcast_changes_pid: broadcast_changes_pid
+      }
+
       {:ok, state, {:continue, :setup_connected_user_events}}
     else
       nil ->
@@ -139,6 +146,19 @@ defmodule Realtime.Tenants.Connect do
         {:stop, :shutdown}
     end
   end
+
+  defp start_broadcast_changes(%Tenant{notify_private_alpha: true} = tenant) do
+    case BroadcastChanges.Handler.start(tenant) do
+      {:ok, pid} ->
+        {:ok, pid}
+
+      {:error, error} ->
+        log_error("UnableToStartBroadcastChanges", error)
+        {:error, error}
+    end
+  end
+
+  defp start_broadcast_changes(_), do: {:ok, nil}
 
   @impl GenServer
   def handle_continue(
